@@ -1,0 +1,29 @@
+graph TB
+    Client[前端客户端] --> Router[FastAPI路由层]
+    
+    Router --> Process[处理路由]
+    Router --> ModelsAPI[模型查询API]
+    
+    Process --> ASRRegistry[ASR注册表]
+    Process --> LLMRegistry[LLM注册表]
+    Process --> PushRegistry[推送注册表]
+    
+    ASRRegistry --> FunASR[FunASR本地]
+    ASRRegistry --> DashScope[阿里百炼]
+    ASRRegistry --> OllamaASR[Ollama ASR]
+    ASRRegistry --> Whisper[Whisper]
+    
+    LLMRegistry --> Qwen[通义千问]
+    LLMRegistry --> OllamaLLM[Ollama LLM]
+    LLMRegistry --> OpenAI[OpenAI GPT]
+    LLMRegistry --> Claude[Claude]
+    
+    PushRegistry --> Notion[Notion]
+    PushRegistry --> Feishu[飞书]
+    PushRegistry --> DingTalk[钉钉]
+    PushRegistry --> WeCom[企业微信]
+    
+    Process --> TableChain[表格处理链]
+    TableChain --> Excel[Excel导出]
+    TableChain --> CSV[CSV导出]
+    TableChain --> PDF[PDF生成]

@@ -1,0 +1,94 @@
+# =============================================================================
+# Docker Compose 说明（小白向）
+# -----------------------------------------------------------------------------
+# • 本文件定义「一组容器」如何一起启动：Redis、后端 API、前端网页。
+# • 请在「项目根目录」执行：docker compose up -d（或 make up）
+# • 根目录需有 .env（可复制 .env.example），Compose 会读其中的变量，例如端口。
+# • 「服务 service」= 一个容器角色；「卷 volume」= 持久化磁盘，容器删了数据还在。
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Redis：内存数据库，本项目用来存配置、任务状态等（后端通过 REDIS_URL 连接）
+  # ---------------------------------------------------------------------------
+  redis:
+    # image：直接用 Docker Hub 上的官方镜像，本地没有会自动下载
+    image: redis:7-alpine
+    # 容器名字，方便 docker ps / 日志里辨认
+    container_name: media2text-redis
+    # 宿主机重启后容器也尽量自动拉起（除非手动 stop）
+    restart: unless-stopped
+    ports:
+      # 「宿主机端口:容器内端口」
+      # 左边可从 .env 的 REDIS_PUBLISH_PORT 读；没写则默认 6379
+      # 右边 6379 是 Redis 在容器里监听的端口（一般不改）
+      - "${REDIS_PUBLISH_PORT:-6379}:6379"
+    volumes:
+      # 命名卷 redis_data 挂到容器 /data，Redis 持久化文件放这里，删容器不丢数据
+      - redis_data:/data
+    # AOF 持久化，重启后数据还在
+    command: redis-server --appendonly yes
+    healthcheck:
+      # 健康检查：能 ping 通才算「健康」，backend 会等 Redis 健康后再启动
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Backend：FastAPI / uvicorn，对外提供 /api
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      # context：构建镜像时，把哪个文件夹当作「项目根」发给 Docker
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: media2text-backend
+    restart: unless-stopped
+    ports:
+      # 宿主机访问后端 API 的端口（默认 8000）映射到容器内 8000
+      - "${BACKEND_PORT:-8000}:8000"
+    env_file:
+      # 把根目录 .env 注入为容器的环境变量（数据库路径、Redis 片段变量等）
+      - .env
+    # 仅覆盖「进了 Linux 容器后必须用」的路径与 Redis；同名变量会覆盖 env_file 里的值
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      SQLITE_PATH: /app/data/${SQLITE_FILENAME:-media2text.db}
+      MODELSCOPE_CACHE: /root/.cache/modelscope
+      TEMP_DIR: /app/temp
+    volumes:
+      # bind mount：左边是你电脑上的目录，右边是容器内路径
+      - ./backend/output:/app/output
+      # SQLite / 模型缓存：左边可用 .env 里 SQLITE_DATA_DIR、MODELSCOPE_CACHE；不写则用命名卷
+      - "${SQLITE_DATA_DIR:-sqlite_data}:/app/data"
+      - "${MODELSCOPE_CACHE:-funasr_cache}:/root/.cache/modelscope"
+      - "${TEMP_DIR:-./backend/temp}:/app/temp"
+    depends_on:
+      # 等 Redis 健康检查通过后再启动 backend，避免连不上 Redis
+      redis:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Frontend：Nginx 提供静态页面，并把浏览器访问的 /api 转发给 backend 容器
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: media2text-frontend
+    restart: unless-stopped
+    ports:
+      # 浏览器访问「宿主机 FRONTEND_PORT」（默认 3000）→ 容器内 Nginx 的 80 端口
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      # 先保证 backend 容器存在（启动顺序）；真正连 API 靠 nginx.conf 里的主机名 backend
+      - backend
+
+# -----------------------------------------------------------------------------
+# 声明「命名卷」：下面的名字要在上面 volumes: 里用过，Compose 才会创建它们
+# -----------------------------------------------------------------------------
+volumes:
+  redis_data:
+  sqlite_data:
+  funasr_cache:
