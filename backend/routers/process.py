@@ -29,7 +29,11 @@ from services.file_detector import detect_file_type
 from services.markdown_formatter import format_merged, format_single
 from services.oss_uploader import category_segment, upload_caption_to_oss, upload_to_oss
 from services.summarizer import get_summarizer
-from services.video_converter import audio_to_mp3_if_needed, video_to_audio
+from services.video_converter import (
+    audio_to_mp3_if_needed,
+    probe_media_duration_seconds,
+    video_to_audio,
+)
 
 router = APIRouter(prefix="/process", tags=["process"])
 LOG = get_logger("process")
@@ -314,10 +318,17 @@ async def _run_pipeline(
                         raise ValueError(
                             "百炼API需要OSS URL，请在设置中开启[上传音频到OSS]或配置OSS"
                         )
+                    try:
+                        audio_sz = Path(work_audio).stat().st_size
+                    except OSError:
+                        audio_sz = None
+                    audio_dur = await probe_media_duration_seconds(Path(work_audio))
                     transcript = await asr_dashscope.transcribe(
                         audio_oss_url,
                         cfg.dashscope_api_key,
                         trace_id,
+                        audio_duration_sec=audio_dur,
+                        audio_bytes=audio_sz,
                     )
                 log_timing(
                     LOG,

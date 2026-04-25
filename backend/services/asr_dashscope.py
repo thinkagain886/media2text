@@ -14,6 +14,38 @@ from core.logger import get_logger, log_error, log_step, log_timing
 
 LOG = get_logger("asr_dashscope")
 
+# 百炼轮询：基于 ffprobe 媒体时长（秒）；拿到 task_id 后轮询总时限
+_DASHSCOPE_POLL_DEADLINE_SEC = 600.0
+_FIRST_WAIT_MIN_SEC = 0.2
+# 首等：片长 × 1.5%（每 100s 音频等 1.5s 再查第一次），下限 0.2s；极长片封顶避免久无反馈
+_FIRST_WAIT_RATIO = 0.015
+_FIRST_WAIT_MAX_SEC = 120.0
+# 第 2 次及以后每次未完成时的固定 sleep，由时长映射到 [0.5, 5]
+_REPEAT_SLEEP_MIN_SEC = 0.5
+_REPEAT_SLEEP_MAX_SEC = 5.0
+# repeat = clamp( T / _REPEAT_SLEEP_DIVISOR )
+_REPEAT_SLEEP_DIVISOR = 600.0
+# ffprobe 失败时用于估算的默认时长（秒）
+_FALLBACK_DURATION_SEC = 120.0
+
+
+def dashscope_first_wait_after_submit_sec(duration_sec: float) -> float:
+    """提交成功后、第 1 次 fetch 前的本地等待（秒）：max(0.5, T×8%) 再封顶。"""
+    d = max(0.0, float(duration_sec))
+    if d <= 0:
+        d = _FALLBACK_DURATION_SEC
+    raw = d * _FIRST_WAIT_RATIO
+    return max(_FIRST_WAIT_MIN_SEC, min(_FIRST_WAIT_MAX_SEC, raw))
+
+
+def dashscope_repeat_poll_sleep_sec(duration_sec: float) -> float:
+    """第 1 次 fetch 之后，若仍处理中，每次再查询前的固定 sleep（秒）。"""
+    d = max(0.0, float(duration_sec))
+    if d <= 0:
+        d = _FALLBACK_DURATION_SEC
+    raw = d / _REPEAT_SLEEP_DIVISOR
+    return max(_REPEAT_SLEEP_MIN_SEC, min(_REPEAT_SLEEP_MAX_SEC, raw))
+
 
 def _out_dict(rsp: Any) -> Dict[str, Any]:
     out = getattr(rsp, "output", None)
@@ -138,7 +170,13 @@ def _extract_text(final_rsp: Any) -> str:
         return ""
 
 
-async def transcribe(oss_url: str, api_key: str, trace_id: str) -> str:
+async def transcribe(
+    oss_url: str,
+    api_key: str,
+    trace_id: str,
+    audio_duration_sec: Optional[float] = None,
+    audio_bytes: Optional[int] = None,
+) -> str:
     if not (oss_url or "").strip():
         raise ValueError("百炼API需要OSS URL，请在设置中开启[上传音频到OSS]选项")
 
@@ -149,6 +187,8 @@ async def transcribe(oss_url: str, api_key: str, trace_id: str) -> str:
         "提交百炼转写任务",
         oss_url=oss_url,
         model="paraformer-v2",
+        audio_duration_sec=audio_duration_sec,
+        audio_bytes=audio_bytes,
     )
 
     def _submit():
@@ -188,39 +228,97 @@ async def transcribe(oss_url: str, api_key: str, trace_id: str) -> str:
         raise RuntimeError("百炼未返回 task_id")
     log_step(LOG, trace_id, "dashscope_asr", "已提交任务", task_id=task_id)
 
-    deadline = time.perf_counter() + 300.0
+    if audio_duration_sec is None or audio_duration_sec <= 0:
+        LOG.warning(
+            "百炼：未获取到有效 ffprobe 时长，轮询间隔按兜底 %.0fs 估算",
+            _FALLBACK_DURATION_SEC,
+            extra={"trace_id": trace_id},
+        )
+    d_used = (
+        float(audio_duration_sec)
+        if (audio_duration_sec is not None and audio_duration_sec > 0)
+        else _FALLBACK_DURATION_SEC
+    )
+    first_wait = dashscope_first_wait_after_submit_sec(d_used)
+    repeat_sleep = dashscope_repeat_poll_sleep_sec(d_used)
+    LOG.info(
+        "百炼：轮询参数（媒体时长 %.2fs）| 首等=%.2fs（片长×%.1f%%，封顶 %.0fs）"
+        " | 未完成时固定再隔=%.2fs（T/%.0f，限 %.1f~%.1fs）| 轮询总时限=%.0fs | task_id=%s",
+        d_used,
+        first_wait,
+        _FIRST_WAIT_RATIO * 100,
+        _FIRST_WAIT_MAX_SEC,
+        repeat_sleep,
+        _REPEAT_SLEEP_DIVISOR,
+        _REPEAT_SLEEP_MIN_SEC,
+        _REPEAT_SLEEP_MAX_SEC,
+        _DASHSCOPE_POLL_DEADLINE_SEC,
+        task_id,
+        extra={"trace_id": trace_id},
+    )
+
+    deadline = time.perf_counter() + _DASHSCOPE_POLL_DEADLINE_SEC
     last_rsp: Optional[Any] = None
+    poll_round = 0
+
+    LOG.info(
+        "百炼：提交成功，本地先 asyncio.sleep(%.2f)s 后再发起第 1 次查询 | task_id=%s",
+        first_wait,
+        task_id,
+        extra={"trace_id": trace_id},
+    )
+    await asyncio.sleep(first_wait)
 
     while time.perf_counter() < deadline:
+        poll_round += 1
+        if poll_round == 1:
+            LOG.info(
+                "百炼：开始第 1 次查询任务状态 | task_id=%s",
+                task_id,
+                extra={"trace_id": trace_id},
+            )
+
         def _fetch():
             return Transcription.fetch(task_id, api_key=api_key)
 
+        t_fetch = time.perf_counter()
         try:
             rsp = await asyncio.to_thread(_fetch)
         except Exception as e:
             log_error(LOG, trace_id, "dashscope_poll", e, task_id=task_id)
             raise
 
+        fetch_sec = time.perf_counter() - t_fetch
         last_rsp = rsp
         od = _out_dict(rsp)
         st = od.get("task_status") or od.get("taskStatus")
         nst = _norm_task_status(st)
-        log_step(
-            LOG,
-            trace_id,
-            "dashscope_poll",
-            "轮询状态",
-            task_id=task_id,
-            status=st,
-        )
 
         if nst == _norm_task_status(TaskStatus.SUCCEEDED):
             LOG.info(
-                "百炼轮询成功 | task_id=%s | output=%s",
+                "百炼：第 %d 次查询成功 | 耗时 %.2fs | task_id=%s",
+                poll_round,
+                fetch_sec,
                 task_id,
-                json.dumps(od, ensure_ascii=False, default=str)[:12000],
                 extra={"trace_id": trace_id},
             )
+            try:
+                snap = json.dumps(od, ensure_ascii=False, default=str)
+                if len(snap) > 4000:
+                    snap = snap[:4000] + "...(truncated)"
+                LOG.info(
+                    "百炼：成功结果 output 摘要 | task_id=%s | %s",
+                    task_id,
+                    snap,
+                    extra={"trace_id": trace_id},
+                )
+            except (TypeError, ValueError):
+                LOG.info(
+                    "百炼：成功结果 output 摘要 | task_id=%s | %s",
+                    task_id,
+                    str(od)[:4000],
+                    extra={"trace_id": trace_id},
+                )
             break
         if nst in (
             _norm_task_status(TaskStatus.FAILED),
@@ -241,9 +339,22 @@ async def transcribe(oss_url: str, api_key: str, trace_id: str) -> str:
             raise RuntimeError(
                 f"百炼转写失败: task_id={task_id} status_code={sc} message={msg}"
             )
-        await asyncio.sleep(3)
+        LOG.info(
+            "百炼：第 %d 次查询仍未完成（当前状态=%s）。本地将 asyncio.sleep(%.2f)s 后"
+            " 发起第 %d 次查询（固定间隔，由片长推算）| task_id=%s",
+            poll_round,
+            st,
+            repeat_sleep,
+            poll_round + 1,
+            task_id,
+            extra={"trace_id": trace_id},
+        )
+        await asyncio.sleep(repeat_sleep)
+
     else:
-        raise TimeoutError(f"百炼转写超时（300s） task_id={task_id}")
+        raise TimeoutError(
+            f"百炼转写超时（{_DASHSCOPE_POLL_DEADLINE_SEC:.0f}s） task_id={task_id}"
+        )
 
     text = _extract_text(last_rsp)
     if not (text or "").strip():
@@ -260,5 +371,13 @@ async def transcribe(oss_url: str, api_key: str, trace_id: str) -> str:
         elapsed,
         task_id=task_id,
         chars=len(text or ""),
+    )
+    LOG.info(
+        "百炼语音识别结束 | 总耗时=%.2fs | 共轮询 %d 次 | 输出字数=%d | task_id=%s",
+        elapsed,
+        poll_round,
+        len(text or ""),
+        task_id,
+        extra={"trace_id": trace_id},
     )
     return text

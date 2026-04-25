@@ -2,12 +2,21 @@
 """结构化日志：时间戳、级别、trace_id、模块名、消息、可选耗时与附加字段"""
 
 import logging
+import os
 import sys
 import traceback
+from datetime import datetime, timedelta, timezone
 from logging import Logger
 from typing import Any
 
 _DATE_FMT = "%Y-%m-%d %H:%M:%S"
+# 日志行时间按固定时区偏移格式化（默认东八区；避免容器系统为 UTC 时少 8 小时）
+_raw_tz_h = os.environ.get("LOG_TZ_OFFSET_HOURS", "8").strip()
+try:
+    _LOG_TZ_OFFSET_HOURS = int(_raw_tz_h) if _raw_tz_h else 8
+except ValueError:
+    _LOG_TZ_OFFSET_HOURS = 8
+_LOG_TZ = timezone(timedelta(hours=max(-12, min(14, _LOG_TZ_OFFSET_HOURS))))
 
 
 class _TraceFilter(logging.Filter):
@@ -19,7 +28,8 @@ class _TraceFilter(logging.Filter):
 
 class _LineFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        ts = self.formatTime(record, _DATE_FMT)
+        ct = datetime.fromtimestamp(record.created, tz=_LOG_TZ)
+        ts = ct.strftime(_DATE_FMT)
         ms = int(getattr(record, "msecs", 0))
         tid = getattr(record, "trace_id", "-")
         return (
