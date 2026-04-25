@@ -82,6 +82,10 @@ class SQLiteAdapter(BaseDBAdapter):
             )
         if "record_uuid" not in cols:
             alters.append("ALTER TABLE records ADD COLUMN record_uuid TEXT")
+        if "recognition_type" not in cols:
+            alters.append(
+                "ALTER TABLE records ADD COLUMN recognition_type TEXT NOT NULL DEFAULT 'funasr'"
+            )
         for sql in alters:
             await db.execute(sql)
 
@@ -122,7 +126,8 @@ class SQLiteAdapter(BaseDBAdapter):
 
     REC_FIELDS = (
         "id, created_at, updated_at, task_id, category, batch_mode, title, source_files, "
-        "captions, summary, status, transcript_on_oss, has_summary, notion_pushed, feishu_pushed, record_uuid"
+        "captions, summary, status, transcript_on_oss, has_summary, notion_pushed, feishu_pushed, record_uuid, "
+        "recognition_type"
     )
 
     def _row_to_item(self, d: dict) -> dict:
@@ -137,6 +142,7 @@ class SQLiteAdapter(BaseDBAdapter):
         d["summarized"] = d.get("has_summary", False)
         d["pushed_notion"] = d.get("notion_pushed", False)
         d["pushed_feishu"] = d.get("feishu_pushed", False)
+        d["recognition_type"] = d.get("recognition_type") or "funasr"
         bm = d.get("batch_mode")
         d["batch_mode_display"] = normalize_batch_mode_display(bm)
         return d
@@ -149,8 +155,8 @@ class SQLiteAdapter(BaseDBAdapter):
                 """
                 INSERT INTO records (
                     task_id, category, batch_mode, title, source_files, captions, summary, status,
-                    transcript_on_oss, has_summary, notion_pushed, feishu_pushed, record_uuid
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    transcript_on_oss, has_summary, notion_pushed, feishu_pushed, record_uuid, recognition_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.get("task_id", ""),
@@ -166,6 +172,7 @@ class SQLiteAdapter(BaseDBAdapter):
                     0,
                     0,
                     ru,
+                    (record.get("recognition_type") or "funasr")[:32],
                 ),
             )
             await db.commit()

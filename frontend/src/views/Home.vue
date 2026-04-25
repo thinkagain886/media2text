@@ -116,6 +116,7 @@ watch(
     () => config.save_audio_local,
     () => config.save_audio_oss,
     () => config.transcribe_enabled,
+    () => config.subtitle_priority,
     () => config.asr_engine,
     () => config.dashscope_api_key,
     () => config.transcript_save_local,

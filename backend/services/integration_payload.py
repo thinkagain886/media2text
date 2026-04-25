@@ -15,6 +15,7 @@ INTEGRATION_KEYS_ORDER: List[str] = [
     "title",
     "category",
     "batch_mode",
+    "recognition_type",
     "captions",
     "summary",
     "source_files",
@@ -28,6 +29,7 @@ EXPORT_COLUMN_ORDER: List[str] = [
     "updated_at",
     "category",
     "batch_mode",
+    "recognition_type",
     "captions",
     "summary",
     "source_files",
@@ -48,6 +50,11 @@ INTEGRATION_SCHEMA_ROWS: List[Dict[str, str]] = [
     },
     {"key": "category", "notion_type": "Select", "feishu_type": "文本"},
     {"key": "batch_mode", "notion_type": "Select", "feishu_type": "文本"},
+    {
+        "key": "recognition_type",
+        "notion_type": "Select",
+        "feishu_type": "文本",
+    },
     {"key": "captions", "notion_type": "Rich text", "feishu_type": "多行文本"},
     {"key": "summary", "notion_type": "Rich text", "feishu_type": "多行文本"},
     {
@@ -102,6 +109,7 @@ def sanitize_source_files_public(raw: Any) -> List[Dict[str, Any]]:
         out.append(
             {
                 "filename": x.get("filename") or "",
+                "original_filename": x.get("original_filename") or None,
                 "audio_oss_url": x.get("audio_oss_url"),
                 "caption_oss_url": x.get("caption_oss_url"),
             }
@@ -122,6 +130,7 @@ def integration_dict_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "title": str(row.get("title") or ""),
         "category": str(row.get("category") or ""),
         "batch_mode": bm,
+        "recognition_type": str(row.get("recognition_type") or "funasr"),
         "captions": row.get("captions") or "",
         "summary": row.get("summary") or "",
         "source_files": json.dumps(sfs, ensure_ascii=False),

@@ -2,12 +2,15 @@
   <a-modal
     v-model:open="visible"
     title="系统设置"
-    width="720px"
+    width="800px"
     :footer="null"
     destroy-on-close
+    wrap-class-name="settings-modal-root"
+    :body-style="{ padding: 0 }"
     @cancel="$emit('update:open', false)"
   >
-    <a-tabs v-model:activeKey="tab" tab-position="left">
+    <div class="settings-modal-body">
+      <a-tabs v-model:activeKey="tab" tab-position="left" class="settings-tabs">
       <a-tab-pane key="oss" tab="OSS 配置">
         <div class="hint" style="margin-bottom: 12px">是否在转写前上传音频到 OSS 请在主页「处理选项」中开关；此处仅填写凭证。</div>
         <a-input v-model:value="local.oss_access_key_id" placeholder="Access Key ID" />
@@ -27,6 +30,18 @@
           </a-form-item>
           <a-form-item label="临时文件目录">
             <a-input v-model:value="local.temp_dir" placeholder="./temp" />
+          </a-form-item>
+          <a-form-item label="文件名清洗正则">
+            <a-textarea
+              v-model:value="local.filename_clean_regex"
+              placeholder="留空则不清洗；Python 正则，作用于去掉扩展名后的主名"
+              :auto-size="{ minRows: 2, maxRows: 6 }"
+            />
+            <div class="hint">
+              例：去掉首段「作者-」可用 <code>^[^-]*-\s*</code>；取中间段可用带捕获组如
+              <code>^[^-]*-(.*)-[^-]*$</code>。title、列表与 OSS/本地命名均用清洗后名称；原始名在
+              <code>original_filename</code> 保留。
+            </div>
           </a-form-item>
         </a-form>
       </a-tab-pane>
@@ -104,6 +119,7 @@
         <input ref="jsonFileInputRef" type="file" accept=".json,application/json" class="sr-only" @change="onImportJsonFile" />
       </a-tab-pane>
     </a-tabs>
+    </div>
 
     <div class="footer-btns">
       <a-button danger :loading="resetting" @click="onReset">恢复默认设置</a-button>
@@ -349,6 +365,30 @@ async function onImportJsonFile(ev) {
 </script>
 
 <style scoped>
+.settings-modal-body {
+  height: min(72vh, 680px);
+  min-height: 420px;
+  max-height: 680px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+:deep(.settings-tabs) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+:deep(.settings-tabs .ant-tabs-content-holder) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px 8px 4px;
+}
+:deep(.settings-tabs .ant-tabs-nav) {
+  flex-shrink: 0;
+  padding-top: 8px;
+}
 .hint {
   margin-top: 8px;
   color: #888;

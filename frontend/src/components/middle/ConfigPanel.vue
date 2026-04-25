@@ -39,6 +39,13 @@
               <a-radio value="dashscope">百炼 API</a-radio>
             </a-radio-group>
           </a-form-item>
+          <a-form-item label="字幕优先" class="row-item">
+            <a-switch
+              v-model:checked="config.subtitle_priority"
+              :disabled="!config.transcribe_enabled"
+            />
+            <div class="hint-line">开启后先尝试内嵌软字幕，失败再转写</div>
+          </a-form-item>
         </a-form>
       </section>
 
@@ -290,6 +297,12 @@ const promptOptions = computed(() =>
   margin-top: 6px;
   font-size: 11px;
   color: rgba(0, 0, 0, 0.45);
+  line-height: 1.4;
+}
+.hint-line {
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.45);
+  margin-top: 4px;
   line-height: 1.4;
 }
 </style>

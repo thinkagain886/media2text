@@ -11,6 +11,8 @@ from services import db
 from services.feishu_push import push_items_to_feishu
 from services.integration_payload import integration_dict_from_row
 from services.notion_push import push_items_to_notion
+from services.file_hash import sha256_bytes_prefix8
+from services.filename_clean import safe_display_stem
 from services.oss_uploader import upload_caption_to_oss
 from services.summarizer import get_summarizer
 
@@ -49,17 +51,23 @@ async def upload_caption_oss_record(record_id: int) -> Dict[str, Any]:
         raise ValueError("无字幕文本可上传")
 
     cfg = await _merged_cfg()
-    fn = f"{Path((row.get('title') or 'caption').strip() or 'caption').stem}.md"
-    url = await upload_caption_to_oss(str(caps), fn, cfg)
+    sfs_src: list = list(row.get("source_files") or [])
+    if sfs_src and isinstance(sfs_src[0], dict):
+        fn = (sfs_src[0].get("filename") or f"{(row.get('title') or 'caption')}.md") + ""
+    else:
+        fn = f"{Path((row.get('title') or 'caption').strip() or 'caption').stem}.md"
+    stem = safe_display_stem(Path(fn).stem)
+    cap_h8 = sha256_bytes_prefix8(str(caps).encode("utf-8"))
+    url = await upload_caption_to_oss(str(caps), cap_h8, stem, cfg)
 
     sfs: list = list(row.get("source_files") or [])
     if sfs and isinstance(sfs, list):
         if isinstance(sfs[0], dict):
             sfs[0] = {**sfs[0], "caption_oss_url": url}
         else:
-            sfs = [{"filename": fn, "caption_oss_url": url}]
+            sfs = [{"filename": Path(fn).name, "caption_oss_url": url}]
     else:
-        sfs = [{"filename": fn, "caption_oss_url": url}]
+        sfs = [{"filename": Path(fn).name, "caption_oss_url": url}]
 
     await db.update_record_caption_oss(record_id, sfs, True)
     return await db.get_record(record_id)

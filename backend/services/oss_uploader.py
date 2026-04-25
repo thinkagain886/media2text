@@ -2,14 +2,20 @@
 """阿里云 OSS 上传（同步实现 + asyncio.to_thread 包装）"""
 
 import asyncio
-import time
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
 
 import oss2
 
+from core.logger import get_logger
 from models.schemas import ProcessConfig
+from services.filename_clean import safe_display_stem
+from services.file_hash import sha256_bytes_prefix8
+
+LOG = get_logger("oss_uploader")
+
+# 供「仅文本」上传时与 process 中算法一致
+caption_content_hash8 = sha256_bytes_prefix8
 
 
 def category_segment(category: str) -> str:
@@ -20,10 +26,10 @@ def category_segment(category: str) -> str:
 
 def build_public_url(bucket: str, endpoint: str, object_key: str) -> str:
     """公网 URL：https://{bucket}.{endpoint}/{key}"""
+    from urllib.parse import quote
+
     ep = endpoint.strip().replace("https://", "").replace("http://", "").strip("/")
     key = object_key.lstrip("/")
-    # 对 object_key 进行 URL 编码，安全字符保留 / 等路径分隔符
-    # 这样 #、空格、中文等特殊字符会被正确转义，避免 DashScope 下载失败
     safe_key = quote(key, safe="/-_.~")
     return f"https://{bucket}.{ep}/{safe_key}"
 
@@ -39,17 +45,41 @@ def _bucket(cfg: ProcessConfig) -> oss2.Bucket:
     return oss2.Bucket(auth, ep, cfg.oss_bucket_name.strip())
 
 
+def _object_exists(bucket: oss2.Bucket, key: str) -> bool:
+    try:
+        bucket.head_object(key)
+        return True
+    except oss2.exceptions.NoSuchKey:
+        return False
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("OSS head_object 异常 | key=%s | %s", key, e)
+        return False
+
+
 def _upload_file_sync(
     local_file: Path,
-    original_filename: str,
+    content_hash8: str,
+    display_stem: str,
     subdir: Literal["audios", "captions"],
     cfg: ProcessConfig,
 ) -> str:
+    h8 = (content_hash8 or "").lower()[:8]
+    safe = safe_display_stem(display_stem)
     cat = category_segment(cfg.category)
-    ts = int(time.time() * 1000)
-    safe = Path(original_filename).name.replace("\\", "_").replace("/", "_")
-    object_key = f"{cat}/{subdir}/{ts}_{safe}"
+    if subdir == "audios":
+        object_key = f"{cat}/audios/{h8}_{safe}.mp3"
+    else:
+        object_key = f"{cat}/captions/{h8}_{safe}_transcript.md"
     bucket = _bucket(cfg)
+    exists = _object_exists(bucket, object_key)
+    action = "覆盖上传" if exists else "新建对象"
+    LOG.info(
+        "OSS 上传 | key=%s | sha256_8=%s | 已存在=%s | 行为=%s",
+        object_key,
+        h8,
+        exists,
+        action,
+    )
     headers: dict = {}
     if subdir == "audios":
         headers["Content-Type"] = "audio/mpeg"
@@ -66,25 +96,38 @@ def _upload_file_sync(
 
 async def upload_to_oss(
     local_file: Path,
-    original_filename: str,
+    content_hash8: str,
+    display_stem: str,
     subdir: Literal["audios", "captions"],
     cfg: ProcessConfig,
 ) -> str:
     return await asyncio.to_thread(
         _upload_file_sync,
         local_file,
-        original_filename,
+        content_hash8,
+        display_stem,
         subdir,
         cfg,
     )
 
 
-def _upload_caption_sync(markdown_text: str, original_filename: str, cfg: ProcessConfig) -> str:
+def _upload_caption_sync(
+    markdown_text: str, content_hash8: str, display_stem: str, cfg: ProcessConfig
+) -> str:
+    h8 = (content_hash8 or "").lower()[:8]
+    safe = safe_display_stem(display_stem)
     cat = category_segment(cfg.category)
-    ts = int(time.time() * 1000)
-    stem = Path(original_filename).stem
-    object_key = f"{cat}/captions/{ts}_{stem}_transcript.md"
+    object_key = f"{cat}/captions/{h8}_{safe}_transcript.md"
     bucket = _bucket(cfg)
+    exists = _object_exists(bucket, object_key)
+    action = "覆盖上传" if exists else "新建对象"
+    LOG.info(
+        "OSS 字幕上传 | key=%s | sha256_8(文本)=%s | 已存在=%s | 行为=%s",
+        object_key,
+        h8,
+        exists,
+        action,
+    )
     data = markdown_text.encode("utf-8")
     bucket.put_object(
         object_key,
@@ -100,12 +143,14 @@ def _upload_caption_sync(markdown_text: str, original_filename: str, cfg: Proces
 
 async def upload_caption_to_oss(
     markdown_text: str,
-    original_filename: str,
+    content_hash8: str,
+    display_stem: str,
     cfg: ProcessConfig,
 ) -> str:
     return await asyncio.to_thread(
         _upload_caption_sync,
         markdown_text,
-        original_filename,
+        content_hash8,
+        display_stem,
         cfg,
     )

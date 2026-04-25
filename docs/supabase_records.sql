@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS public.records (
     has_summary BOOLEAN NOT NULL DEFAULT false,
     notion_pushed BOOLEAN NOT NULL DEFAULT false,
     feishu_pushed BOOLEAN NOT NULL DEFAULT false,
+    -- subtitle | funasr | dashscope
+    recognition_type TEXT NOT NULL DEFAULT 'funasr',
 
     CONSTRAINT records_record_uuid_key UNIQUE (record_uuid)
 );

@@ -67,6 +67,7 @@ class SupabaseAdapter(BaseDBAdapter):
         d["summarized"] = d.get("has_summary", False)
         d["pushed_notion"] = d.get("notion_pushed", False)
         d["pushed_feishu"] = d.get("feishu_pushed", False)
+        d["recognition_type"] = d.get("recognition_type") or "funasr"
         bm = d.get("batch_mode")
         d["batch_mode_display"] = normalize_batch_mode_display(bm)
         return d
@@ -89,6 +90,7 @@ class SupabaseAdapter(BaseDBAdapter):
             "notion_pushed": bool(record.get("notion_pushed")),
             "feishu_pushed": bool(record.get("feishu_pushed")),
             "record_uuid": ru,
+            "recognition_type": (record.get("recognition_type") or "funasr")[:32],
         }
         res = self._client.table(self._table).insert(payload).execute()
         rows = getattr(res, "data", None) or []

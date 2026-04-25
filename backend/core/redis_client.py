@@ -25,6 +25,7 @@ def _coerce_field(key: str, value: str) -> Any:
         "save_audio_local",
         "save_audio_oss",
         "transcribe_enabled",
+        "subtitle_priority",
         "transcript_save_local",
         "transcript_save_oss",
         "summary_enabled",
@@ -103,6 +104,9 @@ async def get_config() -> dict:
                 out[k] = v
         else:
             out[k] = v
+    for k, dv in DEFAULT_CONFIG_DICT.items():
+        if k not in out:
+            out[k] = dv
     return out
 
 

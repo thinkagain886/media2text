@@ -19,7 +19,7 @@
       :pagination="pagination"
       :loading="loading"
       :row-selection="rowSelection"
-      :scroll="{ x: 1980 }"
+      :scroll="{ x: 2120 }"
       row-key="id"
       size="small"
     >
@@ -28,6 +28,9 @@
           <a-tooltip :title="record.record_uuid || ''">
             <span>{{ uuidShort(record.record_uuid) }}</span>
           </a-tooltip>
+        </template>
+        <template v-else-if="column.key === 'rec_type'">
+          <a-tag :color="recColor(record.recognition_type)">{{ recLabel(record.recognition_type) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'title'">
           <a-tooltip :title="tipText(record.title)">
@@ -94,74 +97,81 @@
       </template>
     </a-table>
 
-    <a-modal v-model:open="detailOpen" title="记录详情" width="820px" :footer="null">
+    <a-modal v-model:open="detailOpen" title="记录详情" width="880px" :footer="null" destroy-on-close>
       <div v-if="detail" class="detail-wrap">
-        <div class="meta-stack">
-          <div class="meta-row">
-            <span class="meta-k">UUID</span>
-            <span class="mono meta-v">{{ detail.record_uuid || '—' }}</span>
-          </div>
-          <div class="meta-row">
-            <span class="meta-k">标题</span>
-            <span class="meta-v title-v">{{ detail.title || '—' }}</span>
-          </div>
-        </div>
-
-        <div class="lbl">来源文件</div>
-        <a-empty v-if="!(detail.source_files || []).length" description="无" />
-        <div v-else class="sf-list">
-          <div v-for="(sf, i) in detail.source_files || []" :key="i" class="sf-block">
-            <div class="sf-head">{{ sf.filename || '(未命名)' }}</div>
-            <div class="sf-body">
-              <div v-if="sf.audio_oss_url || sf.caption_oss_url" class="sf-actions">
-                <a-button v-if="sf.audio_oss_url" size="small" type="primary" ghost @click="openAudio(sf.audio_oss_url)">
-                  ▶ 播放
-                </a-button>
-                <template v-if="sf.caption_oss_url">
-                  <a :href="sf.caption_oss_url" target="_blank" rel="noopener">打开字幕链接</a>
-                  <a-button size="small" type="link" @click="copyStr(sf.caption_oss_url)">复制链接</a-button>
-                </template>
+        <a-tabs v-model:activeKey="detailTab" class="detail-tabs">
+          <a-tab-pane key="original" tab="原文">
+            <div v-if="firstCaptionOss" class="oss-bar">
+              <span class="oss-lbl">文本 OSS</span>
+              <a :href="firstCaptionOss" target="_blank" rel="noopener" class="oss-link ellip">{{
+                firstCaptionOss
+              }}</a>
+              <a-button size="small" @click="copyStr(firstCaptionOss)">复制链接</a-button>
+            </div>
+            <div v-else class="oss-missing muted">本记录暂无文本 OSS 链接（可在列表中点「上传」生成）</div>
+            <div class="block-head tab-head">
+              <span class="lbl-inline">原文</span>
+              <a-space size="small">
+                <a-button size="small" type="primary" ghost @click="openEditCaptions">编辑</a-button>
+                <a-button size="small" type="link" @click="copyStr(detail.captions || '')">复制原文</a-button>
+              </a-space>
+            </div>
+            <a-textarea
+              :value="detail.captions || ''"
+              readonly
+              class="readonly-box tab-text"
+              :auto-size="{ minRows: 8, maxRows: 24 }"
+            />
+          </a-tab-pane>
+          <a-tab-pane key="summary" tab="AI总结">
+            <div v-if="(detail.summary || '').trim()">
+              <div class="block-head tab-head">
+                <span class="lbl-inline">总结</span>
+                <a-button size="small" type="link" @click="copyStr(detail.summary)">复制</a-button>
               </div>
-              <div v-if="sf.audio_local_path" class="path-line">
-                <span class="pk">音频</span>{{ sf.audio_local_path }}
-              </div>
-              <div v-if="sf.caption_local_path" class="path-line">
-                <span class="pk">字幕</span>{{ sf.caption_local_path }}
+              <a-textarea
+                :value="detail.summary"
+                readonly
+                class="readonly-box tab-text"
+                :auto-size="{ minRows: 6, maxRows: 20 }"
+              />
+            </div>
+            <a-empty v-else description="">
+              <template #description>
+                <div class="empty-sum">
+                  <p>尚未生成总结</p>
+                  <p class="muted">请在历史列表对应行点击「总结」或「重新总结」生成</p>
+                </div>
+              </template>
+            </a-empty>
+          </a-tab-pane>
+          <a-tab-pane key="meta" tab="其它信息">
+            <a-descriptions bordered size="small" :column="1" class="meta-desc">
+              <a-descriptions-item label="分类">{{ detail.category || '—' }}</a-descriptions-item>
+              <a-descriptions-item label="标题">{{ detail.title || '—' }}</a-descriptions-item>
+              <a-descriptions-item v-if="detail.record_uuid" label="UUID">
+                <span class="mono">{{ detail.record_uuid }}</span>
+              </a-descriptions-item>
+            </a-descriptions>
+            <div class="lbl meta-files-lbl">来源文件</div>
+            <a-empty v-if="!(detail.source_files || []).length" description="无" />
+            <div v-else class="meta-file-scroll">
+              <div v-for="(sf, i) in detail.source_files || []" :key="i" class="meta-file-row">
+                <div class="meta-fname ellip">{{ sf.filename || '(未命名)' }}</div>
+                <div v-if="sf.original_filename" class="small muted" style="margin-top: 2px">
+                  原始文件名：{{ sf.original_filename }}
+                </div>
+                <div v-if="sf.audio_oss_url" class="meta-audio">
+                  <audio :src="sf.audio_oss_url" controls preload="none" class="inline-audio" />
+                </div>
+                <div v-else class="muted small">无音频 OSS</div>
+                <div v-if="sf.audio_local_path" class="path-line small">
+                  <span class="pk">本地音频</span>{{ sf.audio_local_path }}
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-
-        <div class="block-head">
-          <span class="lbl-inline">原文</span>
-          <a-space size="small">
-            <a-button size="small" type="primary" ghost @click="openEditCaptions">编辑</a-button>
-            <a-button size="small" type="link" @click="copyStr(detail.captions || '')">复制</a-button>
-          </a-space>
-        </div>
-        <a-textarea :value="detail.captions || ''" readonly class="readonly-box" :auto-size="{ minRows: 6, maxRows: 24 }" />
-
-        <div class="block-head">
-          <span class="lbl-inline">总结</span>
-          <a-space size="small">
-            <a-button size="small" type="primary" ghost @click="openEditSummary">编辑</a-button>
-            <a-button
-              v-if="(detail.summary || '').trim()"
-              size="small"
-              type="link"
-              @click="copyStr(detail.summary)"
-            >
-              复制
-            </a-button>
-          </a-space>
-        </div>
-        <a-textarea
-          :value="detail.summary || ''"
-          readonly
-          class="readonly-box"
-          :auto-size="{ minRows: 4, maxRows: 20 }"
-          placeholder="暂无总结"
-        />
+          </a-tab-pane>
+        </a-tabs>
       </div>
     </a-modal>
 
@@ -217,6 +227,7 @@ const editOpen = ref(false)
 const editKind = ref('captions')
 const editDraft = ref('')
 const editSaving = ref(false)
+const detailTab = ref('original')
 
 const pagination = computed(() => ({
   current: page.value,
@@ -233,6 +244,15 @@ const pagination = computed(() => ({
   },
 }))
 
+const firstCaptionOss = computed(() => {
+  const d = detail.value
+  if (!d) return ''
+  for (const sf of d.source_files || []) {
+    if (sf.caption_oss_url) return sf.caption_oss_url
+  }
+  return ''
+})
+
 const rowSelection = computed(() => ({
   selectedRowKeys: selectedRowKeys.value,
   onChange: (keys) => {
@@ -246,6 +266,7 @@ const columns = [
   { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 142 },
   { title: '更新时间', dataIndex: 'updated_at', key: 'updated_at', width: 158 },
   { title: '分类', dataIndex: 'category', key: 'category', width: 88 },
+  { title: '识别类型', key: 'rec_type', width: 100 },
   { title: '标题', key: 'title', ellipsis: true, width: 160 },
   { title: '原文预览', key: 'cap_prev', width: 120 },
   { title: '总结预览', key: 'sum_prev', width: 120 },
@@ -278,6 +299,20 @@ function tipText(s) {
 
 function modeText(r) {
   return r.batch_mode_display || r.batch_mode || ''
+}
+
+function recLabel(t) {
+  const x = t || 'funasr'
+  if (x === 'subtitle') return '字幕'
+  if (x === 'dashscope') return '百炼API'
+  return '本地FunASR'
+}
+
+function recColor(t) {
+  const x = t || 'funasr'
+  if (x === 'subtitle') return 'success'
+  if (x === 'dashscope') return 'orange'
+  return 'geekblue'
 }
 
 function ossOk(r) {
@@ -340,6 +375,7 @@ async function load() {
 }
 
 async function openDetail(row) {
+  detailTab.value = 'original'
   detail.value = await api.getHistoryOne(row.id)
   detailOpen.value = true
 }
@@ -667,5 +703,83 @@ function clearAll() {
 }
 .sep {
   color: rgba(0, 0, 0, 0.25);
+}
+.detail-tabs {
+  margin-top: 4px;
+}
+.tab-head {
+  margin-top: 0;
+}
+.tab-text {
+  font-family: inherit;
+}
+.oss-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(22, 119, 255, 0.06);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(22, 119, 255, 0.12);
+}
+.oss-lbl {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  flex-shrink: 0;
+}
+.oss-link {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  word-break: break-all;
+}
+.oss-missing {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.empty-sum {
+  text-align: center;
+  padding: 8px 0 16px;
+}
+.empty-sum p {
+  margin: 4px 0;
+}
+.meta-desc {
+  margin-bottom: 12px;
+}
+.meta-files-lbl {
+  margin-top: 4px;
+}
+.meta-file-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+}
+.meta-file-row {
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.02);
+}
+.meta-fname {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.meta-audio {
+  width: 100%;
+}
+.inline-audio {
+  width: 100%;
+  max-width: 100%;
+  height: 36px;
+}
+.small {
+  font-size: 11px;
 }
 </style>

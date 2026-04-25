@@ -26,8 +26,11 @@ from models.schemas import (
 from services import asr_dashscope, asr_local, db
 from services.integration_payload import integration_dict_from_row
 from services.file_detector import detect_file_type
+from services.file_hash import sha256_bytes_prefix8, sha256_file_prefix8
+from services.filename_clean import clean_file_stem, safe_display_stem
 from services.markdown_formatter import format_merged, format_single
 from services.oss_uploader import category_segment, upload_caption_to_oss, upload_to_oss
+from services.subtitle_extract import try_extract_embedded_subtitle_plain
 from services.summarizer import get_summarizer
 from services.video_converter import (
     audio_to_mp3_if_needed,
@@ -113,26 +116,34 @@ async def _push(
     await queue.put(payload)
 
 
-async def _save_audio_local(work: Path, filename: str, cfg: ProcessConfig) -> str:
+async def _save_audio_local(
+    work: Path, cfg: ProcessConfig, content_hash8: str, display_stem: str
+) -> str:
     cat = category_segment(cfg.category)
     base = Path(cfg.audio_local_base_path)
     if not base.is_absolute():
         base = BACKEND_ROOT / base
     dest_dir = base / cat / "audios"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{Path(filename).stem}.mp3"
+    h = (content_hash8 or "").lower()[:8]
+    stem = safe_display_stem(display_stem)
+    dest = dest_dir / f"{h}_{stem}.mp3"
     await asyncio.to_thread(shutil.copy2, work, dest)
     return str(dest.resolve())
 
 
-async def _save_caption_local(markdown_text: str, filename: str, cfg: ProcessConfig) -> str:
+async def _save_caption_local(
+    markdown_text: str, cfg: ProcessConfig, content_hash8: str, display_stem: str
+) -> str:
     cat = category_segment(cfg.category)
     base = Path(cfg.transcript_local_base_path)
     if not base.is_absolute():
         base = BACKEND_ROOT / base
     dest_dir = base / cat / "captions"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{Path(filename).stem}_transcript.md"
+    h = (content_hash8 or "").lower()[:8]
+    stem = safe_display_stem(display_stem)
+    dest = dest_dir / f"{h}_{stem}_transcript.md"
 
     def _w() -> None:
         dest.write_text(markdown_text, encoding="utf-8")
@@ -173,6 +184,7 @@ async def _save_db(
             "transcript_on_oss": to,
             "has_summary": hs,
             "record_uuid": ru,
+            "recognition_type": (pr.recognition_type or "funasr"),
         }
     )
     return rid, uuid_out
@@ -194,6 +206,16 @@ def _validate_cfg(cfg: ProcessConfig) -> None:
             raise HTTPException(status_code=400, detail="百炼转写需要完整 OSS 配置")
 
 
+def _merge_recognition_type(types: List[str]) -> str:
+    if not types:
+        return "funasr"
+    if all(t == "subtitle" for t in types):
+        return "subtitle"
+    if any(t == "dashscope" for t in types):
+        return "dashscope"
+    return "funasr"
+
+
 async def _run_pipeline(
     task_id: str,
     cfg: ProcessConfig,
@@ -204,24 +226,42 @@ async def _run_pipeline(
     results: List[ProcessResult] = []
     merge_pairs: List[tuple[str, str]] = []
     merge_sources: List[SourceFile] = []
+    merge_recs: List[str] = []
 
     for i, fi in enumerate(files):
-        filename = fi.filename
-        src = _resolve_temp_path(fi.temp_path)
-
+        raw_name = fi.filename
         audio_local_path: Optional[str] = None
         audio_oss_url: Optional[str] = None
         transcript: Optional[str] = None
         markdown_text: Optional[str] = None
         caption_local_path: Optional[str] = None
         caption_oss_url: Optional[str] = None
+        rec_type: str = "funasr"
+        stem_safe = Path(raw_name).stem
+        file_label = raw_name
 
         try:
+            src = _resolve_temp_path(fi.temp_path)
+            src_hash8 = await asyncio.to_thread(sha256_file_prefix8, src)
+            stem_base = clean_file_stem(raw_name, cfg.filename_clean_regex, trace_id=trace_id)
+            stem_safe = safe_display_stem(stem_base)
+            ext = Path(raw_name).suffix
+            file_label = f"{stem_safe}{ext}"
+
+            log_step(
+                LOG,
+                trace_id,
+                "file_meta",
+                "文件名与源 hash",
+                original=raw_name,
+                file_label=file_label,
+                content_sha256_8=src_hash8,
+            )
             await _push(
                 queue,
                 task_id,
                 i,
-                filename,
+                file_label,
                 "converting",
                 "检测文件类型...",
                 5,
@@ -233,20 +273,20 @@ async def _run_pipeline(
                     queue,
                     task_id,
                     i,
-                    filename,
+                    file_label,
                     "converting",
                     "正在提取音频...",
                     12,
                 )
                 t0 = time.perf_counter()
-                out_mp3 = _temp_root() / f"{task_id[:8]}_{i}_{Path(filename).stem}.mp3"
+                out_mp3 = _temp_root() / f"{task_id[:8]}_{i}_{src_hash8}.mp3"
                 await video_to_audio(src, out_mp3)
                 log_timing(
                     LOG,
                     trace_id,
                     "video_to_audio",
                     time.perf_counter() - t0,
-                    file=filename,
+                    file=file_label,
                 )
                 work_audio = out_mp3
             else:
@@ -254,12 +294,12 @@ async def _run_pipeline(
                     queue,
                     task_id,
                     i,
-                    filename,
+                    file_label,
                     "converting",
                     "准备音频...",
                     10,
                 )
-                out_mp3 = _temp_root() / f"{task_id[:8]}_{i}_{Path(filename).stem}.mp3"
+                out_mp3 = _temp_root() / f"{task_id[:8]}_{i}_{src_hash8}.mp3"
                 work_audio = await audio_to_mp3_if_needed(src, out_mp3)
 
             if cfg.save_audio_local:
@@ -267,12 +307,14 @@ async def _run_pipeline(
                     queue,
                     task_id,
                     i,
-                    filename,
+                    file_label,
                     "saving",
                     "保存音频到本地...",
                     22,
                 )
-                audio_local_path = await _save_audio_local(work_audio, filename, cfg)
+                audio_local_path = await _save_audio_local(
+                    work_audio, cfg, src_hash8, stem_safe
+                )
 
             need_oss_asr = cfg.transcribe_enabled and cfg.asr_engine == "dashscope"
             if cfg.save_audio_oss or need_oss_asr:
@@ -280,7 +322,7 @@ async def _run_pipeline(
                     queue,
                     task_id,
                     i,
-                    filename,
+                    file_label,
                     "uploading_oss",
                     "上传音频到OSS...",
                     32,
@@ -288,7 +330,8 @@ async def _run_pipeline(
                 t0 = time.perf_counter()
                 audio_oss_url = await upload_to_oss(
                     work_audio,
-                    filename,
+                    src_hash8,
+                    stem_safe,
                     "audios",
                     cfg,
                 )
@@ -297,63 +340,108 @@ async def _run_pipeline(
                     trace_id,
                     "oss_upload_audio",
                     time.perf_counter() - t0,
-                    file=filename,
+                    file=file_label,
                 )
 
             if cfg.transcribe_enabled:
-                await _push(
-                    queue,
-                    task_id,
-                    i,
-                    filename,
-                    "transcribing",
-                    "正在转写音频...",
-                    45,
-                )
-                t0 = time.perf_counter()
-                if cfg.asr_engine == "funasr":
-                    transcript = await asr_local.transcribe(work_audio, trace_id)
-                else:
-                    if not audio_oss_url:
-                        raise ValueError(
-                            "百炼API需要OSS URL，请在设置中开启[上传音频到OSS]或配置OSS"
-                        )
-                    try:
-                        audio_sz = Path(work_audio).stat().st_size
-                    except OSError:
-                        audio_sz = None
-                    audio_dur = await probe_media_duration_seconds(Path(work_audio))
-                    transcript = await asr_dashscope.transcribe(
-                        audio_oss_url,
-                        cfg.dashscope_api_key,
-                        trace_id,
-                        audio_duration_sec=audio_dur,
-                        audio_bytes=audio_sz,
+                transcript = None
+                rec_type = "funasr"
+                if cfg.subtitle_priority:
+                    await _push(
+                        queue,
+                        task_id,
+                        i,
+                        file_label,
+                        "transcribing",
+                        "尝试提取内嵌字幕...",
+                        40,
                     )
-                log_timing(
-                    LOG,
-                    trace_id,
-                    f"asr_{cfg.asr_engine}",
-                    time.perf_counter() - t0,
-                    file=filename,
-                    chars=len(transcript or ""),
-                )
-                markdown_text = format_single(filename, transcript or "")
+                    t_sub = time.perf_counter()
+                    sub_plain = await try_extract_embedded_subtitle_plain(
+                        src,
+                        qwen_api_key=cfg.qwen_api_key,
+                        trace_id=trace_id,
+                    )
+                    log_timing(
+                        LOG,
+                        trace_id,
+                        "embed_subtitle",
+                        time.perf_counter() - t_sub,
+                        file=file_label,
+                        ok=bool(sub_plain),
+                    )
+                    if sub_plain:
+                        transcript = sub_plain
+                        rec_type = "subtitle"
+                if transcript is None:
+                    await _push(
+                        queue,
+                        task_id,
+                        i,
+                        file_label,
+                        "transcribing",
+                        "正在转写音频...",
+                        45,
+                    )
+                    t0 = time.perf_counter()
+                    if cfg.asr_engine == "funasr":
+                        transcript = await asr_local.transcribe(work_audio, trace_id)
+                        rec_type = "funasr"
+                    else:
+                        if not audio_oss_url:
+                            raise ValueError(
+                                "百炼API需要OSS URL，请在设置中开启[上传音频到OSS]或配置OSS"
+                            )
+                        try:
+                            audio_sz = Path(work_audio).stat().st_size
+                        except OSError:
+                            audio_sz = None
+                        audio_dur = await probe_media_duration_seconds(Path(work_audio))
+                        transcript = await asr_dashscope.transcribe(
+                            audio_oss_url,
+                            cfg.dashscope_api_key,
+                            trace_id,
+                            audio_duration_sec=audio_dur,
+                            audio_bytes=audio_sz,
+                        )
+                        rec_type = "dashscope"
+                    log_timing(
+                        LOG,
+                        trace_id,
+                        f"asr_{cfg.asr_engine}",
+                        time.perf_counter() - t0,
+                        file=file_label,
+                        chars=len(transcript or ""),
+                    )
+                else:
+                    log_step(
+                        LOG,
+                        trace_id,
+                        "embed_subtitle",
+                        "已使用内嵌字幕为原文",
+                        file=file_label,
+                        chars=len(transcript or ""),
+                    )
+                markdown_text = format_single(file_label, transcript or "")
 
             if cfg.transcribe_enabled and transcript and cfg.transcript_save_local:
                 await _push(
                     queue,
                     task_id,
                     i,
-                    filename,
+                    file_label,
                     "saving",
                     "保存字幕到本地...",
                     62,
                 )
+                cap_h8 = sha256_bytes_prefix8(
+                    (markdown_text or "").encode("utf-8")
+                )
                 caption_local_path = await _save_caption_local(
                     markdown_text or "",
-                    filename,
                     cfg,
+                    cap_h8,
+                    stem_safe,
                 )
 
             if cfg.transcribe_enabled and transcript and cfg.transcript_save_oss:
@@ -361,19 +449,24 @@ async def _run_pipeline(
                     queue,
                     task_id,
                     i,
-                    filename,
+                    file_label,
                     "uploading_oss",
                     "上传字幕到OSS...",
                     72,
                 )
+                cap_h8 = sha256_bytes_prefix8(
+                    (markdown_text or "").encode("utf-8")
+                )
                 caption_oss_url = await upload_caption_to_oss(
                     markdown_text or "",
-                    filename,
+                    cap_h8,
+                    stem_safe,
                     cfg,
                 )
 
             sf = SourceFile(
-                filename=filename,
+                filename=file_label,
+                original_filename=raw_name,
                 audio_local_path=audio_local_path,
                 audio_oss_url=audio_oss_url,
                 caption_local_path=caption_local_path,
@@ -391,7 +484,7 @@ async def _run_pipeline(
                     queue,
                     task_id,
                     i,
-                    filename,
+                    file_label,
                     "summarizing",
                     "AI总结中...",
                     82,
@@ -402,11 +495,12 @@ async def _run_pipeline(
 
             if cfg.batch_mode == "separate":
                 pr = ProcessResult(
-                    title=Path(filename).stem,
+                    title=stem_safe,
                     source_files=[sf],
                     captions=markdown_text,
                     summary=summary,
                     status="success",
+                    recognition_type=rec_type,
                 )
                 saved = await _save_db(task_id, cfg, pr)
                 if saved is not None:
@@ -416,26 +510,27 @@ async def _run_pipeline(
 
             else:
                 if cfg.transcribe_enabled and transcript:
-                    merge_pairs.append((filename, transcript))
+                    merge_pairs.append((file_label, transcript))
+                    merge_recs.append(rec_type)
                 merge_sources.append(sf)
 
             await _push(
                 queue,
                 task_id,
                 i,
-                filename,
+                file_label,
                 "done",
                 "处理完成",
                 100,
             )
 
         except Exception as e:
-            log_error(LOG, trace_id, "process_file", e, file=filename)
+            log_error(LOG, trace_id, "process_file", e, file=raw_name)
             await _push(
                 queue,
                 task_id,
                 i,
-                filename,
+                file_label,
                 "error",
                 f"处理失败: {e}",
                 0,
@@ -444,7 +539,7 @@ async def _run_pipeline(
             if cfg.batch_mode == "separate":
                 results.append(
                     ProcessResult(
-                        title=Path(filename).stem,
+                        title=stem_safe,
                         source_files=[],
                         status="error",
                         error_msg=str(e),
@@ -474,6 +569,7 @@ async def _run_pipeline(
             captions=merged_captions,
             summary=summary,
             status="success",
+            recognition_type=_merge_recognition_type(merge_recs),
         )
         saved = await _save_db(task_id, cfg, pr)
         if saved is not None:
