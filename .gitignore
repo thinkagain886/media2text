@@ -57,7 +57,8 @@ tmp/
 *.temp
 
 # FunASR / ModelScope 模型缓存
-backend/models/
+# 注意：勿忽略 backend/models/ —— 该目录是 Python 包（Pydantic 模式），模型权重在
+# MODELSCOPE_CACHE、hub/ 或 *.modelscope_cache/，勿与源码目录同名。
 backend/output/
 *.modelscope_cache/
 hub/
