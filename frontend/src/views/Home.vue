@@ -25,11 +25,11 @@
               block
               size="large"
               class="start-btn"
-              :loading="task.isProcessing"
-              :disabled="startDisabled"
+              :loading="task.isProcessing || files.isUploading"
+              :disabled="startDisabled || files.isUploading"
               @click="onStart"
             >
-              {{ task.isProcessing ? '处理中…' : '开始处理' }}
+              {{ startButtonText }}
             </a-button>
           </a-tooltip>
         </div>
@@ -84,9 +84,18 @@ const ossOk = computed(
     config.oss_endpoint?.trim()
 )
 
+const startButtonText = computed(() => {
+  if (files.isUploading) {
+    const { done, total, current } = files.uploadProgress
+    return current ? `上传中 (${done}/${total})…` : '上传中…'
+  }
+  if (task.isProcessing) return '处理中…'
+  return '开始处理'
+})
+
 const startDisabled = computed(() => {
   if (!files.fileList.length) return true
-  if (task.isProcessing) return true
+  if (task.isProcessing || files.isUploading) return true
   if (config.transcribe_enabled && config.asr_engine === 'dashscope' && !ossOk.value) return true
   if (config.transcribe_enabled && config.batch_mode === 'merge' && !config.merge_title?.trim()) return true
   return false

@@ -1,0 +1,33 @@
+# 本地虚拟环境（容器内已通过 pip install 安装依赖，勿复制）
+.venv/
+venv/
+env/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 运行时数据（compose 通过 volume 挂载，不应打进镜像）
+temp/
+output/
+data/
+*.db
+
+# 密钥与本地环境
+.env
+.env.local
+
+# IDE / 系统文件
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore

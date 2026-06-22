@@ -12,6 +12,9 @@
         <span class="idx">{{ item.index }}</span>
         <a-tag :color="item.isVideo ? 'processing' : 'success'">{{ item.isVideo ? '视频' : '音频' }}</a-tag>
         <span class="name" :title="item.filename">{{ item.filename }}</span>
+        <a-tag v-if="item.uploadStatus" :color="item.uploadColor" class="upload-tag">
+          {{ item.uploadLabel }}
+        </a-tag>
         <span class="sz">{{ item.sizeText }}</span>
         <a-button type="link" danger size="small" @click="files.removeFile(item.id)">删除</a-button>
       </div>
@@ -38,6 +41,9 @@ function fmt(n) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
+const UPLOAD_LABEL = { uploading: '上传中', done: '已上传', error: '失败' }
+const UPLOAD_COLOR = { uploading: 'processing', done: 'success', error: 'error' }
+
 const rows = computed(() =>
   files.fileList.map((f, i) => ({
     id: f.id,
@@ -45,6 +51,9 @@ const rows = computed(() =>
     filename: f.filename,
     sizeText: fmt(f.size),
     isVideo: VIDEO.has(extOf(f.filename)),
+    uploadStatus: f.upload_status,
+    uploadLabel: UPLOAD_LABEL[f.upload_status] || '',
+    uploadColor: UPLOAD_COLOR[f.upload_status] || 'default',
   }))
 )
 </script>
@@ -109,6 +118,12 @@ const rows = computed(() =>
   white-space: nowrap;
   min-width: 0;
   color: rgba(0, 0, 0, 0.82);
+}
+.upload-tag {
+  flex-shrink: 0;
+  margin: 0;
+  font-size: 11px;
+  line-height: 18px;
 }
 .sz {
   color: rgba(0, 0, 0, 0.45);
