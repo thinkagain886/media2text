@@ -781,6 +781,34 @@ docker compose logs -f backend
 - **后端 API**：http://localhost:8000
 - **API 文档**（FastAPI 自动生成）：http://localhost:8000/docs
 
+### Docker 本地输出路径（重要）
+
+后端跑在 **Linux 容器**里，**不能**在设置里填 Windows 盘符路径（如 `D:\matedata\media-to-text`）。容器不认 `D:\`，文件会写到容器内部，宿主机上的 D 盘和 `backend/output` 都会是空的。
+
+**正确做法：**
+
+1. 在 **设置 → 本地路径与存储** 中，音频/字幕输出根目录填 **`/app/output`**（容器内路径）。
+2. 在 `docker-compose.yml` 的 `backend.volumes` 里，把宿主机目录挂到 `/app/output`，例如：
+
+```yaml
+volumes:
+  # 默认（输出在项目 backend/output）：
+  - ./backend/output:/app/output
+  # 或挂到 D 盘（Windows 示例）：
+  # - D:/matedata/media-to-text:/app/output
+```
+
+3. 修改 compose 或路径后执行 `docker compose up -d --build backend` 重建后端。
+
+本地文件结构（`{分类}` 为当前分类名）：
+
+```text
+/app/output/{分类}/audios/{hash8}_{标题}.mp3
+/app/output/{分类}/captions/{hash8}_{标题}_transcript.md
+```
+
+> **纯本地开发**（不用 Docker、直接 `uvicorn`）时，才可以在设置里填 `D:\...` 或 `./output` 等本机路径。
+
 ### Makefile 快捷命令一览
 
 ```bash
@@ -1304,9 +1332,32 @@ Endpoint 常用值：
 *   **第三方平台同步**：Notion 和飞书均使用该 UUID 作为唯一键，防止产生重复卡片。
 *   **Redis 缓存防抖**：处理完成后将各平台 ID 存入 Redis（5分钟）。再次推送时优先查缓存，命中则直接 Update，极大提升速度并规避限流。
 
+### 13.6 网络失败与自动重试
+
+OSS 上传（`put_object`）与转写（FunASR / 百炼）在失败时会 **自动重试最多 3 次**（间隔 1s、2s），3 次仍失败才向界面报错。日志中可见类似：
+
+```text
+OSS put Java面试/audios/... 失败，1s 后重试 (1/3) | ...
+百炼转写 失败，2s 后重试 (2/3) | ...
+```
+
+实现位于 `backend/core/retry.py`，单元测试见 `backend/tests/test_retry.py`。
+
 ---
 
 ## 14. 历史记录与二次处理
+
+### 14.0 导出当前批次识别结果（无需入库）
+
+整批任务**全部结束**后，右侧 **「识别结果」** 才会显示列表（进行中单个文件虽可能显示「处理完成」，但结果区需等整批结束）。
+
+| 操作 | 说明 |
+|------|------|
+| **下载全部** | 下载 JSON，每条 `captions` 字段为完整转写正文 |
+| **复制全部 JSON** | 复制到剪贴板 |
+| **全选 → 下载所选 JSON** | 只导出勾选的条目 |
+
+> 先 **下载/复制** 再点 **「清除」**，否则刷新页面后当前批次结果会丢失（仅存于浏览器内存）。若需长期留存，请开启 **「保存到历史记录」** 或 **「保存文本到本地」**。
 
 ### 14.1 查看历史记录
 
@@ -1535,6 +1586,25 @@ make rebuild-frontend  # 重建前端
 volumes:
   - funasr_cache:/root/.cache  # 这行必须存在
 ```
+
+---
+
+**Q: Docker 部署，D 盘或 `backend/output` 里没有音频/文本文件**
+
+→ 见上文 [§8 Docker 本地输出路径](#docker-本地输出路径重要)。常见原因：设置里填了 `D:\...` 但未在 compose 中挂载；或只 `restart` 未 `docker compose up -d --build backend` 导致代码/配置未生效。
+
+排查容器内实际路径：
+
+```bash
+docker exec media2text-backend find /app -name "*_transcript.md" | head
+docker exec media2text-backend find /app/output -name "*.mp3" 2>/dev/null | head
+```
+
+---
+
+**Q: OSS 上传报 SSL / `UNEXPECTED_EOF_WHILE_READING`**
+
+→ 多为本机到阿里云的网络或代理问题。项目已对 OSS/转写做 3 次自动重试；仍失败时请检查 VPN/防火墙、在设置中 **测试 OSS 连接**，或换稳定网络后重试。
 
 ---
 

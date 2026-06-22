@@ -11,6 +11,7 @@ from dashscope.audio.asr import Transcription
 from dashscope.common.constants import TaskStatus
 
 from core.logger import get_logger, log_error, log_step, log_timing
+from core.retry import retry_async
 
 LOG = get_logger("asr_dashscope")
 
@@ -170,7 +171,7 @@ def _extract_text(final_rsp: Any) -> str:
         return ""
 
 
-async def transcribe(
+async def _transcribe_once(
     oss_url: str,
     api_key: str,
     trace_id: str,
@@ -381,3 +382,27 @@ async def transcribe(
         extra={"trace_id": trace_id},
     )
     return text
+
+
+async def transcribe(
+    oss_url: str,
+    api_key: str,
+    trace_id: str,
+    audio_duration_sec: Optional[float] = None,
+    audio_bytes: Optional[int] = None,
+) -> str:
+    async def _once() -> str:
+        return await _transcribe_once(
+            oss_url,
+            api_key,
+            trace_id,
+            audio_duration_sec=audio_duration_sec,
+            audio_bytes=audio_bytes,
+        )
+
+    return await retry_async(
+        _once,
+        op="百炼转写",
+        log=LOG,
+        trace_id=trace_id,
+    )

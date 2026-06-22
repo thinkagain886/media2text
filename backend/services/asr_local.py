@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from core.config_loader import settings
 from core.logger import get_logger, log_error, log_step, log_timing
+from core.retry import retry_async
 
 LOG = get_logger("asr_local")
 
@@ -146,7 +147,16 @@ async def transcribe(audio_path: Path, trace_id: str) -> str:
     t0 = time.perf_counter()
     try:
         loop = asyncio.get_running_loop()
-        text = await loop.run_in_executor(None, _sync_transcribe, audio_path)
+
+        async def _run() -> str:
+            return await loop.run_in_executor(None, _sync_transcribe, audio_path)
+
+        text = await retry_async(
+            _run,
+            op="FunASR 转写",
+            log=LOG,
+            trace_id=trace_id,
+        )
     except Exception as e:
         log_error(LOG, trace_id, "funasr", e, file=str(audio_path))
         raise

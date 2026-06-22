@@ -58,8 +58,11 @@ services:
       MODELSCOPE_CACHE: /root/.cache/modelscope
       TEMP_DIR: /app/temp
     volumes:
-      # bind mount：左边是你电脑上的目录，右边是容器内路径
+      # bind mount：左边是宿主机目录，右边是容器内路径
+      # ⚠️ 设置里「音频/字幕输出根目录」须填 /app/output（勿填 D:\，除非下面已挂载 D 盘）
       - ./backend/output:/app/output
+      # 挂到 Windows D 盘示例（取消注释并改路径，设置里填 /app/output）：
+      # - D:/matedata/media-to-text:/app/output
       # SQLite / 模型缓存：左边可用 .env 里 SQLITE_DATA_DIR、MODELSCOPE_CACHE；不写则用命名卷
       - "${SQLITE_DATA_DIR:-sqlite_data}:/app/data"
       - "${MODELSCOPE_CACHE:-funasr_cache}:/root/.cache/modelscope"

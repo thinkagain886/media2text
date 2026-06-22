@@ -8,6 +8,7 @@ from typing import Literal
 import oss2
 
 from core.logger import get_logger
+from core.retry import retry_sync
 from models.schemas import ProcessConfig
 from services.filename_clean import safe_display_stem
 from services.file_hash import sha256_bytes_prefix8
@@ -66,8 +67,11 @@ def _upload_file_sync(
         headers["Content-Type"] = "audio/mpeg"
     elif subdir == "captions":
         headers["Content-Type"] = "text/markdown; charset=utf-8"
-    with open(local_file, "rb") as f:
-        bucket.put_object(object_key, f, headers=headers)
+    def _do_put() -> None:
+        with open(local_file, "rb") as f:
+            bucket.put_object(object_key, f, headers=headers)
+
+    retry_sync(_do_put, op=f"OSS put {object_key}", log=LOG)
     return build_public_url(
         cfg.oss_bucket_name.strip(),
         cfg.oss_endpoint.strip(),
@@ -102,11 +106,15 @@ def _upload_caption_sync(
     bucket = _bucket(cfg)
     LOG.info("OSS put caption | %s", object_key)
     data = markdown_text.encode("utf-8")
-    bucket.put_object(
-        object_key,
-        data,
-        headers={"Content-Type": "text/markdown; charset=utf-8"},
-    )
+
+    def _do_put() -> None:
+        bucket.put_object(
+            object_key,
+            data,
+            headers={"Content-Type": "text/markdown; charset=utf-8"},
+        )
+
+    retry_sync(_do_put, op=f"OSS put caption {object_key}", log=LOG)
     return build_public_url(
         cfg.oss_bucket_name.strip(),
         cfg.oss_endpoint.strip(),

@@ -676,6 +676,28 @@ docker compose logs -f backend
 - **后端 API**：http://localhost:8000
 - **API 文档**（FastAPI 自动生成）：http://localhost:8000/docs
 
+### Docker 本地输出路径（重要）
+
+后端跑在 **Linux 容器**里，**不能**在设置里填 Windows 盘符路径（如 `D:\matedata\media-to-text`）。容器不认 `D:\`，文件会写到容器内部，宿主机上的 D 盘和 `backend/output` 都会是空的。
+
+**正确做法：**
+
+1. 在 **设置 → 本地路径与存储** 中，音频/字幕输出根目录填 **`/app/output`**（容器内路径）。
+2. 在 `docker-compose.yml` 的 `backend.volumes` 里，把宿主机目录挂到 `/app/output`，例如：
+
+```yaml
+volumes:
+  - ./backend/output:/app/output
+  # Windows 挂 D 盘示例：
+  # - D:/matedata/media-to-text:/app/output
+```
+
+3. 修改 compose 或路径后执行 `docker compose up -d --build backend` 重建后端。
+
+本地文件结构：`/app/output/{分类}/audios/`、`/app/output/{分类}/captions/`。
+
+> **纯本地开发**（不用 Docker）时，才可以在设置里填 `D:\...` 或 `./output`。
+
 ### Makefile 快捷命令一览
 
 ```bash
@@ -1143,9 +1165,17 @@ Endpoint 常用值：
 
 填写完成后点 **[测试连接]** 验证是否配置正确。
 
+### 13.4 网络失败与自动重试
+
+OSS 上传与转写（FunASR / 百炼）失败时会 **自动重试最多 3 次**（间隔 1s、2s）。实现见 `backend/core/retry.py`，测试见 `backend/tests/test_retry.py`。
+
 ---
 
 ## 14. 历史记录与二次处理
+
+### 14.0 导出当前批次识别结果（无需入库）
+
+整批任务全部结束后，右侧 **「识别结果」** 才显示列表。可用 **下载全部** 导出 JSON（`captions` 为转写正文）；先下载再点 **清除**，避免刷新后丢失。长期留存请开 **保存到历史记录** 或 **保存文本到本地**。
 
 ### 14.1 查看历史记录
 
@@ -1380,6 +1410,18 @@ make rebuild-frontend  # 重建前端
 volumes:
   - funasr_cache:/root/.cache  # 这行必须存在
 ```
+
+---
+
+**Q: Docker 部署，D 盘或 `backend/output` 里没有文件**
+
+→ 设置里勿填 `D:\...`，除非已在 compose 将宿主机目录挂载到 `/app/output`；输出根目录应填 `/app/output`。详见 §8「Docker 本地输出路径」。
+
+---
+
+**Q: OSS 上传报 SSL / 连接被重置**
+
+→ 项目已自动重试 3 次；仍失败请检查网络/VPN，或在设置中测试 OSS 连接。
 
 ---
 
