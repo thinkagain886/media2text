@@ -20,9 +20,9 @@ services:
     restart: unless-stopped
     ports:
       # 「宿主机端口:容器内端口」
-      # 左边可从 .env 的 REDIS_PUBLISH_PORT 读；没写则默认 6379
+      # 左边可从 .env 的 REDIS_PUBLISH_PORT 读；没写则默认 6389（常用 6379 十位 +1）
       # 右边 6379 是 Redis 在容器里监听的端口（一般不改）
-      - "${REDIS_PUBLISH_PORT:-6379}:6379"
+      - "${REDIS_PUBLISH_PORT:-6389}:6379"
     volumes:
       # 命名卷 redis_data 挂到容器 /data，Redis 持久化文件放这里，删容器不丢数据
       - redis_data:/data
@@ -46,8 +46,8 @@ services:
     container_name: media2text-backend
     restart: unless-stopped
     ports:
-      # 宿主机访问后端 API 的端口（默认 8000）映射到容器内 8000
-      - "${BACKEND_PORT:-8000}:8000"
+      # 宿主机访问后端 API 的端口（默认 8010，常用 8000 十位 +1）映射到容器内 8000
+      - "${BACKEND_PORT:-8010}:8000"
     env_file:
       # 把根目录 .env 注入为容器的环境变量（数据库路径、Redis 片段变量等）
       - .env
@@ -82,8 +82,8 @@ services:
     container_name: media2text-frontend
     restart: unless-stopped
     ports:
-      # 浏览器访问「宿主机 FRONTEND_PORT」（默认 3000）→ 容器内 Nginx 的 80 端口
-      - "${FRONTEND_PORT:-3000}:80"
+      # 浏览器访问「宿主机 FRONTEND_PORT」（默认 3010，常用 3000 十位 +1）→ 容器内 Nginx 的 80 端口
+      - "${FRONTEND_PORT:-3010}:80"
     depends_on:
       # 先保证 backend 容器存在（启动顺序）；真正连 API 靠 nginx.conf 里的主机名 backend
       - backend
